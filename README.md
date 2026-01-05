@@ -68,16 +68,22 @@ usage:
 options:
   -len        Payload length in bytes (default: 64)
   -interval   Interval between packets in milliseconds (default: 1000)
+  -4          Force IPv4
+  -6          Force IPv6
 
 examples:
   udpping 44.55.66.77 4000
   udpping fe80::5400:ff:aabb:ccdd 4000
+  udpping example.com 4000
+  udpping example.com 4000 -4
   udpping 44.55.66.77 4000 -len=400 -interval=2000
 ```
 
 # Features
 
 - **IPv4 and IPv6 Support**: Automatically detects and supports both IPv4 and IPv6 addresses
+- **Domain Name Resolution**: Supports domain names with automatic DNS resolution
+- **IP Version Control**: Use -4 or -6 flags to force IPv4 or IPv6 resolution
 - **Automatic Reconnection**: Automatically reconnects if connection fails
 - **Configurable Payload**: Customize payload size with `-len` parameter
 - **Configurable Interval**: Set ping interval and timeout with `-interval` parameter

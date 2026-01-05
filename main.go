@@ -22,6 +22,9 @@ var (
 	targetPort int
 	payloadLen int
 	interval   int
+	forceIPv4  bool
+	forceIPv6  bool
+	resolvedIP string
 )
 
 var (
@@ -30,6 +33,7 @@ var (
 	rttSum        float64
 	rttMin        float64
 	rttMax        float64
+	conn          *net.UDPConn
 )
 
 func init() {
@@ -38,6 +42,8 @@ func init() {
 	flag.IntVar(&targetPort, "port", 0, "Target port")
 	flag.IntVar(&payloadLen, "len", defaultLen, "Payload length in bytes")
 	flag.IntVar(&interval, "interval", defaultInterval, "Interval in milliseconds")
+	flag.BoolVar(&forceIPv4, "4", false, "Force IPv4")
+	flag.BoolVar(&forceIPv6, "6", false, "Force IPv6")
 }
 
 func randomString(length int) string {
@@ -71,17 +77,59 @@ func signalHandler() {
 }
 
 func createConnection() (*net.UDPConn, error) {
-	isIPv6 := strings.Contains(targetIP, ":")
-	if isIPv6 {
+	var targetIPAddr net.IP
+	var err error
+
+	if forceIPv6 || (!forceIPv4 && strings.Contains(targetIP, ":")) {
+		targetIPAddr = net.ParseIP(targetIP)
+		if targetIPAddr == nil {
+			targetIPAddr, err = resolveDomain(targetIP, true)
+			if err != nil {
+				return nil, err
+			}
+		}
+		resolvedIP = targetIPAddr.String()
 		return net.DialUDP("udp6", nil, &net.UDPAddr{
-			IP:   net.ParseIP(targetIP),
+			IP:   targetIPAddr,
 			Port: targetPort,
 		})
 	}
+
+	targetIPAddr = net.ParseIP(targetIP)
+	if targetIPAddr == nil {
+		targetIPAddr, err = resolveDomain(targetIP, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resolvedIP = targetIPAddr.String()
+
 	return net.DialUDP("udp4", nil, &net.UDPAddr{
-		IP:   net.ParseIP(targetIP),
+		IP:   targetIPAddr,
 		Port: targetPort,
 	})
+}
+
+func resolveDomain(domain string, wantIPv6 bool) (net.IP, error) {
+	ips, err := net.LookupIP(domain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve domain: %v", err)
+	}
+	for _, ip := range ips {
+		if wantIPv6 {
+			if ip.To4() == nil {
+				return ip, nil
+			}
+		} else {
+			if ip.To4() != nil {
+				return ip, nil
+			}
+		}
+	}
+	if wantIPv6 {
+		return nil, fmt.Errorf("no IPv6 address found for domain %s", domain)
+	}
+	return nil, fmt.Errorf("no IPv4 address found for domain %s", domain)
 }
 
 func main() {
@@ -93,10 +141,14 @@ func main() {
 		fmt.Println("options:")
 		fmt.Println("  -len        Payload length in bytes (default: 64)")
 		fmt.Println("  -interval   Interval between packets in milliseconds (default: 1000)")
+		fmt.Println("  -4          Force IPv4")
+		fmt.Println("  -6          Force IPv6")
 		fmt.Println()
 		fmt.Println("examples:")
 		fmt.Println("  udpping 44.55.66.77 4000")
 		fmt.Println("  udpping fe80::5400:ff:aabb:ccdd 4000")
+		fmt.Println("  udpping example.com 4000")
+		fmt.Println("  udpping example.com 4000 -4")
 		fmt.Println("  udpping 44.55.66.77 4000 -len=400 -interval=2000")
 	}
 
@@ -123,6 +175,10 @@ func main() {
 				fmt.Sscanf(arg, "-len=%d", &payloadLen)
 			} else if strings.HasPrefix(arg, "-interval=") {
 				fmt.Sscanf(arg, "-interval=%d", &interval)
+			} else if arg == "-4" {
+				forceIPv4 = true
+			} else if arg == "-6" {
+				forceIPv6 = true
 			}
 		}
 	}
@@ -139,18 +195,23 @@ func main() {
 
 	go signalHandler()
 
-	fmt.Printf("UDPping %s via port %d with %d bytes of payload\n", targetIP, targetPort, payloadLen)
-
-	intervalDuration := time.Duration(interval) * time.Millisecond
-
-	var conn *net.UDPConn
-	var err error
-
-	conn, err = createConnection()
+	conn, err := createConnection()
 	if err != nil {
 		fmt.Printf("Error connecting: %v\n", err)
 		os.Exit(1)
 	}
+
+	if resolvedIP != "" {
+		ipType := "IPv4"
+		if forceIPv6 || strings.Contains(resolvedIP, ":") {
+			ipType = "IPv6"
+		}
+		fmt.Printf("UDPping %s [%s - %s] via port %d with %d bytes of payload\n", targetIP, ipType, resolvedIP, targetPort, payloadLen)
+	} else {
+		fmt.Printf("UDPping %s via port %d with %d bytes of payload\n", targetIP, targetPort, payloadLen)
+	}
+
+	intervalDuration := time.Duration(interval) * time.Millisecond
 
 	for {
 		payload := randomString(payloadLen)
@@ -191,7 +252,7 @@ func main() {
 			}
 
 			receivedData := string(buf[:n])
-			targetIPNormalized := net.ParseIP(targetIP)
+			targetIPNormalized := net.ParseIP(resolvedIP)
 			receivedIPNormalized := addr.IP
 
 			if receivedData == payload && receivedIPNormalized.Equal(targetIPNormalized) && addr.Port == targetPort {
